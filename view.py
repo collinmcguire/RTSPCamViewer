@@ -1,78 +1,86 @@
-from PyQt5 import QtGui
-from PyQt5.QtWidgets import QWidget, QApplication, QLabel, QVBoxLayout
-from PyQt5.QtGui import QPixmap
+from PyQt5.QtWidgets import *
+from PyQt5.QtGui import *
+from PyQt5.QtCore import *
 import sys
 import cv2
-from PyQt5.QtCore import pyqtSignal, pyqtSlot, Qt, QThread
-import numpy as np
+from threading import Thread
 
-class RTSPVideo(QThread):
-    change_pixmap_signal = pyqtSignal(np.ndarray)
+class RTSPVideo(QWidget):
+    # Setup signal
+    change_pixmap_signal = pyqtSignal(QImage)
 
-    def __init__(self):
-        super().__init__()
-        self._run_flag = True
+    def __init__(self,camera,parent=None):
+        super(RTSPVideo,self).__init__(parent)
 
-    def run(self):
-        # IP Cam setup
-        #BY = cv2.VideoCapture('rtsp://192.168.100.23:554/s1')
-        #LR = cv2.VideoCapture('rtsp://192.168.100.22:554/s1')
-        FY = cv2.VideoCapture('rtsp://192.168.100.16:554/s1')
+        self.rtspLink = cv2.VideoCapture(camera)
 
-        while self._run_flag:
-            ret, img = FY.read()
-            if ret:
-                    self.change_pixmap_signal.emit(img)
-        FY.release()
+        # Start new thread to get camera stream
+        self.thread = Thread(target=self.get_frames,args=())
+        self.thread.dameon = True
+        self.thread.start()
+
+        # Create new label
+        self.img_label = QLabel()
+
+        # Connect signal to slot
+        self.change_pixmap_signal.connect(self.update_image)
 
     def stop(self):
+        """Sets run flag to False and waits for thread to finish"""
         self._run_flag = False
         self.wait()
 
-class ImageViewer(QWidget):
-    # init
-    def __init__(self):
-        super().__init__()
+    def get_frames(self):
+        while True:
+            ret, img = self.rtspLink.read()
+            if ret:
+                # Convert to proper format
+                rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+                h, w, ch = rgb_img.shape
+                bytes_per_line = ch * w
+                convert_to_qt_format = QImage(rgb_img.data, w, h, bytes_per_line, QImage.Format_RGB888)
+                p = convert_to_qt_format.scaled(300,300, Qt.KeepAspectRatio)
+                # Emit imgage to signal
+                self.change_pixmap_signal.emit(p)
 
-        self.setWindowTitle('RTSP Stream')
-        self.display_width = 640
-        self.display_height = 480
+    @pyqtSlot(QImage)
+    def update_image(self,img):
+        self.img_label.setPixmap(QPixmap.fromImage(img))
 
-        self.image_label = QLabel(self)
-        self.image_label.resize(self.display_width, self.display_height)
-        self.textlabel = QLabel('RTSP')
+    def get_image_frame(self):
+        return self.img_label
 
-        vbox = QVBoxLayout()
-        vbox.addWidget(self.image_label)
-        vbox.addWidget(self.textlabel)
-
-        self.setLayout(vbox)
-
-        self.thread = RTSPVideo()
-        self.thread.change_pixmap_signal.connect(self.update_image)
-        self.thread.start()
-
-    def closeEvent(self,event):
+    def closeEvent(self, event):
+        self.rtspLink.release()
         self.thread.stop()
         event.accept()
-
-    @pyqtSlot(np.ndarray)
-    def update_image(self,img):
-        qt_img = self.convert_cv_qt(img)
-        self.image_label.setPixmap(qt_img)
-
-    def convert_cv_qt(self,img):
-        rgb_img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_img.shape
-        bytes_per_line = ch * w
-        convert_to_qt_format = QtGui.QImage(rgb_img.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888)
-        p = convert_to_qt_format.scaled(self.display_width, self.display_height, Qt.KeepAspectRatio)
-        return QPixmap.fromImage(p)
 
 if __name__== '__main__':
     app = QApplication(sys.argv)
 
-    vid = ImageViewer()
-    vid.show()
+    # Setup the main window
+    mainWindow = QMainWindow()
+    mainWindow.setWindowTitle('IP Cam RTSP Stream')
+
+    # Widget Setup
+    camWidget = QWidget()
+
+    # Layout Setup
+    layout = QGridLayout()
+    camWidget.setLayout(layout)
+    mainWindow.setCentralWidget(camWidget)
+
+    # Setup new cam streams
+    cameras = ['rtsp://192.168.100.23:554/s1','rtsp://192.168.100.16:554/s1','rtsp://192.168.100.22:554/s1']
+
+    for camera in cameras:
+        # Get video feed going
+        feed = RTSPVideo(camera)
+
+        # Add to layout
+        layout.addWidget(feed.get_image_frame())
+
+    # Show to main window
+    mainWindow.show()
 
     sys.exit(app.exec_())
